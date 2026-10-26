@@ -1,0 +1,11 @@
+[paths]
+# Tương đối so với thư mục chứa file này; có thể ghi đè bằng biến môi trường ITEM_ANALYSIS_DATA_DIR
+data_dir = "data"
+
+[ctt]
+p_min = 0.3
+p_max = 0.7
+group_fraction = 0.27
+r_pbis_acceptable = 0.2
+r_pbis_good = 0.4
+exclude_item_from_total = true
