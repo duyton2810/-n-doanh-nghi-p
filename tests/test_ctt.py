@@ -1,4 +1,4 @@
-"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D)."""
+"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D; T2.4: KR-20)."""
 import os
 import unittest
 from pathlib import Path
@@ -8,7 +8,7 @@ import pandas as pd
 
 from core.config import CTTThresholds, load_config
 from core.ctt import (SUITABLE, TOO_EASY, TOO_HARD, classify_difficulty,
-                      discrimination_index, item_difficulty, split_groups)
+                      discrimination_index, item_difficulty, kr20, split_groups)
 from core.io import load_key, load_responses
 from core.scoring import filter_blank_students, score_matrix
 
@@ -200,6 +200,79 @@ class TestDiscriminationIndex(unittest.TestCase):
             discrimination_index(pd.DataFrame({"a": [1]}))  # n = 0
 
 
+def _kr20_reference(scored: pd.DataFrame, ddof: int) -> float:
+    """KR-20 viết lại độc lập bằng numpy: sum(p*q) = tổng phương sai từng câu (ddof=0)."""
+    x = scored.to_numpy(dtype=float)
+    k = x.shape[1]
+    return k / (k - 1) * (1 - np.var(x, axis=0).sum() / np.var(x.sum(axis=1), ddof=ddof))
+
+
+def _staircase() -> pd.DataFrame:
+    """4 thí sinh x 3 câu dạng bậc thang (tổng 3, 2, 1, 0)."""
+    return pd.DataFrame([[1, 1, 1], [1, 1, 0], [1, 0, 0], [0, 0, 0]],
+                        columns=["q1", "q2", "q3"], dtype=np.int8)
+
+
+class TestKR20(unittest.TestCase):
+    """kr20."""
+
+    def test_hand_computed_staircase(self) -> None:
+        # L = 3; p = 3/4, 2/4, 1/4 -> pq = 0,1875 + 0,25 + 0,1875 = 0,625
+        # Tổng 3, 2, 1, 0: trung bình 1,5; độ lệch bình phương 2,25 + 0,25 + 0,25 + 2,25 = 5
+        # ddof=0: SD^2 = 5/4 = 1,25 -> KR-20 = 3/2 * (1 - 0,625/1,25) = 0,75
+        # ddof=1: SD^2 = 5/3        -> KR-20 = 3/2 * (1 - 0,375)      = 0,9375
+        self.assertAlmostEqual(kr20(_staircase()), 0.75)
+        self.assertAlmostEqual(kr20(_staircase(), ddof=1), 0.9375)
+
+    def test_hand_computed_negative(self) -> None:
+        # _hand_scored: L = 3; p = 0,5 / 0,5 / 0,4 -> pq = 0,25 + 0,25 + 0,24 = 0,74
+        # Tổng 3,2,2,2,1,1,1,1,0,1: trung bình 1,4; trung bình bình phương 26/10 = 2,6
+        # SD^2 (ddof=0) = 2,6 - 1,96 = 0,64 -> KR-20 = 3/2 * (1 - 0,74/0,64) = -0,234375
+        self.assertAlmostEqual(kr20(_hand_scored()), -0.234375)
+
+    def test_matches_numpy_reference(self) -> None:
+        rng = np.random.default_rng(1)
+        for _ in range(20):
+            ability = rng.normal(size=(60, 1))
+            data = (rng.normal(size=(60, 8)) < ability).astype(np.int8)
+            df = pd.DataFrame(data, columns=[f"q{i}" for i in range(8)])
+            for ddof in (0, 1):
+                self.assertAlmostEqual(kr20(df, ddof=ddof), _kr20_reference(df, ddof))
+
+    def test_ddof_relationship(self) -> None:
+        # SD^2(ddof=1) = SD^2(ddof=0) * N/(N-1), nên 1 - KR/(L/(L-1)) co lại theo (N-1)/N
+        # và KR-20 với ddof=1 luôn lớn hơn ddof=0 (khi sum(pq) > 0).
+        for df in (_staircase(), _hand_scored()):
+            size, k = df.shape
+            factor = k / (k - 1)
+            k0, k1 = kr20(df, ddof=0), kr20(df, ddof=1)
+            self.assertGreater(k1, k0)
+            self.assertAlmostEqual(1 - k1 / factor, (1 - k0 / factor) * (size - 1) / size)
+
+    def test_input_unchanged(self) -> None:
+        df = _hand_scored()
+        before = df.copy()
+        kr20(df)
+        kr20(df, ddof=1)
+        pd.testing.assert_frame_equal(df, before)
+
+    def test_invalid_inputs_raise(self) -> None:
+        with self.assertRaises(ValueError):
+            kr20(_staircase(), ddof=2)
+        with self.assertRaises(ValueError):
+            kr20(_staircase(), ddof=-1)
+        with self.assertRaises(ValueError):
+            kr20(pd.DataFrame())
+        with self.assertRaises(ValueError):
+            kr20(pd.DataFrame({"a": [0, 2], "b": [1, 0]}))
+        with self.assertRaises(ValueError):
+            kr20(pd.DataFrame({"a": [0, 1, 1]}))  # L = 1
+        with self.assertRaises(ValueError):
+            kr20(pd.DataFrame({"a": [1, 0], "b": [0, 1]}))  # tổng đều bằng 1 -> SD^2 = 0
+        with self.assertRaises(ValueError):
+            kr20(pd.DataFrame({"a": [1], "b": [0]}), ddof=1)  # N = 1 -> SD^2 không xác định
+
+
 def _data_dir() -> Path:
     env = os.environ.get("INFOSECCAT_DIR")
     return Path(env) if env else load_config().data_dir / "raw" / "infoseccat"
@@ -247,6 +320,15 @@ class TestRealData(unittest.TestCase):
             self.assertEqual(len(d), 50)
             self.assertEqual(list(d.index), list(scored.columns))
             self.assertTrue(d.between(-1, 1).all())
+
+    def test_kr20_finite_for_276_and_273(self) -> None:
+        for scored, size in ((self.scored_all, 276), (self.scored_kept, 273)):
+            self.assertEqual(len(scored), size)
+            for ddof in (0, 1):
+                value = kr20(scored, ddof=ddof)
+                self.assertTrue(np.isfinite(value))
+                self.assertGreater(value, -1)
+                self.assertLessEqual(value, 1)
 
 
 if __name__ == "__main__":
