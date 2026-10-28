@@ -1,4 +1,4 @@
-"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p, phân loại độ khó, độ phân biệt D, KR-20."""
+"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p, phân loại độ khó, độ phân biệt D, r_pbis, KR-20."""
 from __future__ import annotations
 
 import math
@@ -159,3 +159,47 @@ def kr20(scored: pd.DataFrame, ddof: int = 0) -> float:
     p = item_difficulty(scored)
     sum_pq = float((p * (1 - p)).sum())
     return n_items / (n_items - 1) * (1 - sum_pq / total_var)
+
+
+def point_biserial(
+    scored: pd.DataFrame,
+    thresholds: CTTThresholds | None = None,
+    exclude_item: bool | None = None,
+) -> pd.Series:
+    """Hệ số tương quan điểm-nhị phân r_pbis của từng câu với tổng điểm.
+
+    r_pbis là hệ số Pearson giữa cột câu (0/1) và tổng điểm thí sinh. Khi
+    ``exclude_item`` là True, tổng điểm của mỗi câu là tổng trừ điểm chính câu đó
+    (tổng hiệu chỉnh, tính riêng cho từng câu); khi False dùng tổng đầy đủ.
+
+    Không tính được (câu mọi người cùng đúng hoặc cùng sai, hoặc tổng điểm dùng để
+    tương quan là hằng số) thì trả NaN, không đặt 0.
+
+    Args:
+        scored: ma trận 0/1 (hàng = thí sinh, cột = câu).
+        thresholds: ngưỡng; mặc định lấy ``CTTThresholds()``.
+        exclude_item: None thì lấy ``thresholds.exclude_item_from_total`` (mặc định True).
+
+    Returns:
+        Series tên ``r_pbis``, index là mã câu (giữ thứ tự cột), giá trị trong
+        [-1, 1] hoặc NaN.
+
+    Raises:
+        ValueError: nếu ma trận rỗng hoặc có giá trị khác 0/1.
+    """
+    _check_scored(scored)
+    t = thresholds or CTTThresholds()
+    if exclude_item is None:
+        exclude_item = t.exclude_item_from_total
+    items = scored.astype(float)
+    total = items.sum(axis=1)
+    # mỗi cột của ``other`` là tổng điểm dùng để tương quan với câu cùng tên
+    if exclude_item:
+        other = items.rsub(total, axis=0)
+    else:
+        full = np.broadcast_to(total.to_numpy()[:, None], items.shape)
+        other = pd.DataFrame(full, index=items.index, columns=items.columns)
+    # corrwith trả NaN (không cảnh báo) khi một trong hai cột có phương sai 0;
+    # cột hằng số gồm số nguyên nên độ lệch khỏi trung bình đúng bằng 0
+    r = items.corrwith(other, axis=0).reindex(scored.columns)
+    return pd.Series(np.clip(r.to_numpy(dtype=float), -1.0, 1.0), index=scored.columns, name="r_pbis")

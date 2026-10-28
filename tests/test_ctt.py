@@ -1,14 +1,17 @@
-"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D; T2.4: KR-20)."""
+"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D; T2.3: r_pbis; T2.4: KR-20)."""
 import os
 import unittest
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import pointbiserialr
 
 from core.config import CTTThresholds, load_config
 from core.ctt import (SUITABLE, TOO_EASY, TOO_HARD, classify_difficulty,
-                      discrimination_index, item_difficulty, kr20, split_groups)
+                      discrimination_index, item_difficulty, kr20, point_biserial,
+                      split_groups)
 from core.io import load_key, load_responses
 from core.scoring import filter_blank_students, score_matrix
 
@@ -273,6 +276,143 @@ class TestKR20(unittest.TestCase):
             kr20(pd.DataFrame({"a": [1], "b": [0]}), ddof=1)  # N = 1 -> SD^2 không xác định
 
 
+def _pbis_scored() -> pd.DataFrame:
+    """5 thí sinh x 3 câu cho r_pbis tính tay."""
+    rows = [
+        [1, 1, 1],  # S0 tổng 3
+        [1, 1, 0],  # S1 tổng 2
+        [1, 0, 0],  # S2 tổng 1
+        [0, 1, 0],  # S3 tổng 1
+        [0, 0, 0],  # S4 tổng 0
+    ]
+    return pd.DataFrame(
+        np.array(rows, dtype=np.int8),
+        index=pd.Index([f"S{i}" for i in range(5)], name="student"),
+        columns=pd.Index(["q1", "q2", "q3"], name="question_id"),
+    )
+
+
+def _scipy_pbis(scored: pd.DataFrame, exclude_item: bool) -> list[float]:
+    """r_pbis từng câu tính bằng scipy.stats.pointbiserialr để đối chiếu."""
+    total = scored.sum(axis=1).to_numpy(dtype=float)
+    out = []
+    for col in scored.columns:
+        x = scored[col].to_numpy(dtype=float)
+        out.append(pointbiserialr(x, total - x if exclude_item else total).statistic)
+    return out
+
+
+class TestPointBiserial(unittest.TestCase):
+    """point_biserial."""
+
+    def test_hand_computed_full_total(self) -> None:
+        # Công thức r = (M1 - M0) / s * sqrt(p * q), s là độ lệch chuẩn tổng thể của tổng.
+        # Tổng T = [3, 2, 1, 1, 0]: trung bình 1,4; s^2 = (9+4+1+1+0)/5 - 1,96 = 1,04.
+        # q1 = [1,1,1,0,0]: p = 0,6, M1 = (3+2+1)/3 = 2, M0 = (1+0)/2 = 0,5
+        #   r = 1,5 * sqrt(0,24 / 1,04) = 1,5 * sqrt(3/13) ≈ 0,7206
+        # q2 = [1,1,0,1,0]: p = 0,6, M1 = (3+2+1)/3 = 2, M0 = (1+0)/2 = 0,5 -> như q1
+        # q3 = [1,0,0,0,0]: p = 0,2, M1 = 3, M0 = (2+1+1+0)/4 = 1
+        #   r = 2 * sqrt(0,16 / 1,04) ≈ 0,7845
+        r = point_biserial(_pbis_scored(), exclude_item=False)
+        self.assertEqual(r.name, "r_pbis")
+        self.assertEqual(list(r.index), ["q1", "q2", "q3"])
+        np.testing.assert_allclose(
+            r.to_numpy(),
+            [1.5 * np.sqrt(3 / 13), 1.5 * np.sqrt(3 / 13), 2 * np.sqrt(0.16 / 1.04)],
+            rtol=0, atol=1e-12,
+        )
+
+    def test_hand_computed_corrected_total(self) -> None:
+        # Tổng trừ câu R = T - x, mỗi câu một R riêng; ở cả ba câu s^2(R) = 0,56.
+        # q1: R = [2,1,0,1,0], trung bình 0,8, s^2 = 6/5 - 0,64 = 0,56
+        #   M1 = (2+1+0)/3 = 1, M0 = (1+0)/2 = 0,5 -> r = 0,5 * sqrt(0,24/0,56) = 0,5 * sqrt(3/7)
+        # q2: R = [2,1,1,0,0], trung bình 0,8, s^2 = 0,56
+        #   M1 = (2+1+0)/3 = 1, M0 = (1+0)/2 = 0,5 -> như q1
+        # q3: R = [2,2,1,1,0], trung bình 1,2, s^2 = 10/5 - 1,44 = 0,56
+        #   M1 = 2, M0 = (2+1+1+0)/4 = 1 -> r = sqrt(0,16/0,56) = sqrt(2/7)
+        expected = [0.5 * np.sqrt(3 / 7), 0.5 * np.sqrt(3 / 7), np.sqrt(2 / 7)]
+        np.testing.assert_allclose(
+            point_biserial(_pbis_scored(), exclude_item=True).to_numpy(), expected, rtol=0, atol=1e-12
+        )
+        # mặc định (None) lấy exclude_item_from_total = True từ CTTThresholds
+        np.testing.assert_allclose(point_biserial(_pbis_scored()).to_numpy(), expected, rtol=0, atol=1e-12)
+
+    def test_exclude_item_from_thresholds(self) -> None:
+        df = _pbis_scored()
+        t = CTTThresholds(exclude_item_from_total=False)
+        pd.testing.assert_series_equal(point_biserial(df, t), point_biserial(df, exclude_item=False))
+        # tham số tường minh ghi đè thresholds
+        pd.testing.assert_series_equal(point_biserial(df, t, exclude_item=True), point_biserial(df))
+
+    def test_matches_scipy_random(self) -> None:
+        rng = np.random.default_rng(42)
+        for _ in range(10):
+            ability = rng.normal(size=(150, 1))
+            difficulty = rng.normal(size=(1, 12))
+            prob = 1 / (1 + np.exp(-(ability - difficulty)))
+            data = (rng.random((150, 12)) < prob).astype(np.int8)
+            df = pd.DataFrame(data, columns=[f"q{i}" for i in range(12)])
+            for exclude in (True, False):
+                r = point_biserial(df, exclude_item=exclude)
+                np.testing.assert_allclose(r.to_numpy(), _scipy_pbis(df, exclude), rtol=0, atol=1e-9)
+
+    def test_p_zero_or_one_is_nan_without_warning(self) -> None:
+        rng = np.random.default_rng(1)
+        data = rng.integers(0, 2, size=(30, 5)).astype(np.int8)
+        data[:, 0] = 1
+        data[:, 3] = 0
+        df = pd.DataFrame(data, columns=[f"q{i}" for i in range(5)])
+        for exclude in (True, False):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                r = point_biserial(df, exclude_item=exclude)
+            self.assertTrue(np.isnan(r["q0"]) and np.isnan(r["q3"]))
+            self.assertFalse(r[["q1", "q2", "q4"]].isna().any())
+
+    def test_constant_corrected_total_is_nan(self) -> None:
+        # q2 ai cũng đúng nên tổng trừ q1 = [1,1,1,1] là hằng số -> NaN, không phải 0
+        df = pd.DataFrame({"q1": [1, 0, 1, 0], "q2": [1, 1, 1, 1]})
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            r_ex = point_biserial(df, exclude_item=True)
+            r_full = point_biserial(df, exclude_item=False)
+        self.assertTrue(r_ex.isna().all())
+        # tổng đầy đủ = q1 + 1 nên tương quan hoàn hảo
+        self.assertAlmostEqual(r_full["q1"], 1.0, places=12)
+        self.assertTrue(np.isnan(r_full["q2"]))
+
+    def test_constant_full_total_is_nan(self) -> None:
+        # mỗi thí sinh đúng đúng một câu: tổng đầy đủ là hằng số
+        df = pd.DataFrame({"q1": [1, 0, 1, 0], "q2": [0, 1, 0, 1]})
+        self.assertTrue(point_biserial(df, exclude_item=False).isna().all())
+        np.testing.assert_allclose(point_biserial(df, exclude_item=True).to_numpy(), [-1.0, -1.0])
+
+    def test_bounds_random(self) -> None:
+        rng = np.random.default_rng(7)
+        for _ in range(30):
+            n_students = int(rng.integers(2, 20))
+            data = rng.integers(0, 2, size=(n_students, 4)).astype(np.int8)
+            df = pd.DataFrame(data, columns=list("abcd"))
+            for exclude in (True, False):
+                r = point_biserial(df, exclude_item=exclude).dropna()
+                self.assertTrue(((r >= -1.0) & (r <= 1.0)).all())
+
+    def test_input_unchanged(self) -> None:
+        df = _pbis_scored()
+        before = df.copy()
+        for exclude in (True, False):
+            point_biserial(df, exclude_item=exclude)
+        pd.testing.assert_frame_equal(df, before)
+
+    def test_invalid_inputs_raise(self) -> None:
+        with self.assertRaises(ValueError):
+            point_biserial(pd.DataFrame())
+        with self.assertRaises(ValueError):
+            point_biserial(pd.DataFrame({"a": [0, 1, 2]}))
+        with self.assertRaises(ValueError):
+            point_biserial(pd.DataFrame({"a": [0.5, 1.0]}), exclude_item=False)
+
+
 def _data_dir() -> Path:
     env = os.environ.get("INFOSECCAT_DIR")
     return Path(env) if env else load_config().data_dir / "raw" / "infoseccat"
@@ -329,6 +469,17 @@ class TestRealData(unittest.TestCase):
                 self.assertTrue(np.isfinite(value))
                 self.assertGreater(value, -1)
                 self.assertLessEqual(value, 1)
+
+    def test_r_pbis_matches_scipy_for_50_items(self) -> None:
+        for scored in (self.scored_all, self.scored_kept):
+            p = item_difficulty(scored)
+            self.assertTrue(((p >= 0.196 - 1e-3) & (p <= 0.989 + 1e-3)).all())
+            for exclude in (True, False):
+                r = point_biserial(scored, exclude_item=exclude)
+                self.assertEqual(len(r), 50)
+                self.assertEqual(list(r.index), list(scored.columns))
+                self.assertFalse(r.isna().any())
+                np.testing.assert_allclose(r.to_numpy(), _scipy_pbis(scored, exclude), rtol=0, atol=1e-9)
 
 
 if __name__ == "__main__":
