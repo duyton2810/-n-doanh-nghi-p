@@ -59,3 +59,31 @@ def omit_counts(responses: pd.DataFrame) -> pd.Series:
 def omit_rate(responses: pd.DataFrame) -> pd.Series:
     """Tỉ lệ thí sinh bỏ trống ở mỗi câu (0..1)."""
     return (omit_counts(responses) / len(responses)).rename("omit_rate")
+
+
+def blank_students(responses: pd.DataFrame) -> pd.Index:
+    """Mã các thí sinh bỏ trống toàn bộ câu hỏi (mọi ô đều là ``""``)."""
+    return responses.index[(responses == "").all(axis=1)]
+
+
+def filter_blank_students(
+    responses: pd.DataFrame, exclude: bool = True
+) -> tuple[pd.DataFrame, pd.Index]:
+    """Loại (hoặc giữ) các thí sinh bỏ trống toàn bộ.
+
+    Args:
+        responses: ma trận lựa chọn, ô trống là ``""``.
+        exclude: True thì loại các thí sinh bỏ trống toàn bộ; False thì giữ nguyên.
+
+    Returns:
+        (responses sau lọc, mã các thí sinh đã bị loại). Khi ``exclude=False``
+        phần thứ hai là Index rỗng. Dữ liệu đầu vào không bị sửa.
+
+    Raises:
+        ValueError: nếu sau khi loại không còn thí sinh nào.
+    """
+    removed = blank_students(responses) if exclude else responses.index[:0]
+    kept = responses.drop(index=removed)
+    if kept.empty:
+        raise ValueError("Không còn thí sinh nào sau khi loại thí sinh bỏ trống toàn bộ")
+    return kept, removed
