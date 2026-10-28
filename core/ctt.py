@@ -1,5 +1,7 @@
-"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p và phân loại độ khó câu."""
+"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p, phân loại độ khó, độ phân biệt D."""
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -62,3 +64,66 @@ def classify_difficulty(p: pd.Series, thresholds: CTTThresholds | None = None) -
         np.where(values > t.p_max + _BOUNDARY_TOL, TOO_EASY, SUITABLE),
     )
     return pd.Series(labels, index=p.index, name="difficulty_class")
+
+
+def split_groups(total: pd.Series, fraction: float) -> tuple[pd.Index, pd.Index]:
+    """Chia nhóm cao và nhóm thấp theo tổng điểm (phương pháp nhóm 27%).
+
+    Mỗi nhóm có ``n = floor(fraction * N + 0.5)`` thí sinh (làm tròn nửa lên, không
+    dùng ``round()`` kiểu làm tròn về số chẵn của Python), cộng dung sai 1e-9 để
+    tránh sai số dấu phẩy động khi ``fraction * N`` đúng bằng x,5.
+
+    Xử lý hòa điểm ở ranh giới: thí sinh được xếp hạng giảm dần theo tổng điểm bằng
+    một lần sắp xếp ổn định (stable sort); những người bằng điểm giữ thứ tự xuất hiện
+    trong dữ liệu (người xuất hiện trước xếp hạng cao hơn). Nhóm cao là ``n`` người đầu
+    bảng xếp hạng, nhóm thấp là ``n`` người cuối bảng. Vì vậy kết quả lặp lại được
+    với cùng dữ liệu, nhưng phụ thuộc thứ tự hàng khi có hòa điểm ở ranh giới.
+
+    Args:
+        total: tổng điểm từng thí sinh (index = student, không trùng, không thiếu giá trị).
+        fraction: tỉ lệ mỗi nhóm, ví dụ 0,27.
+
+    Returns:
+        ``(high, low)``: index thí sinh nhóm cao (xếp theo hạng từ cao xuống) và
+        nhóm thấp (xếp theo hạng, người thấp nhất ở cuối).
+
+    Raises:
+        ValueError: nếu ``total`` có giá trị thiếu hoặc index trùng, nếu ``n < 1``,
+            hoặc nếu hai nhóm trùng nhau (``2n > N``).
+    """
+    if total.isna().any():
+        raise ValueError("Tổng điểm có giá trị thiếu")
+    if not total.index.is_unique:
+        raise ValueError("Index thí sinh bị trùng")
+    size = len(total)
+    n = math.floor(fraction * size + 0.5 + _BOUNDARY_TOL)
+    if n < 1:
+        raise ValueError(f"Nhóm có {n} thí sinh (N={size}, fraction={fraction}); cần ít nhất 1")
+    if 2 * n > size:
+        raise ValueError(f"Hai nhóm {n} thí sinh trùng nhau (N={size})")
+    order = np.argsort(-total.to_numpy(dtype=float), kind="stable")
+    ranked = total.index[order]
+    return ranked[:n], ranked[size - n:]
+
+
+def discrimination_index(scored: pd.DataFrame, thresholds: CTTThresholds | None = None) -> pd.Series:
+    """Độ phân biệt D: tỉ lệ đúng nhóm cao trừ tỉ lệ đúng nhóm thấp, cho từng câu.
+
+    Tổng điểm là ``scored.sum(axis=1)`` (gồm cả câu đang xét); nhóm chia bằng
+    :func:`split_groups` với ``thresholds.group_fraction``. D nằm trong [-1, 1].
+
+    Args:
+        scored: ma trận 0/1 (hàng = thí sinh, cột = câu).
+        thresholds: ngưỡng; mặc định lấy ``CTTThresholds()`` (nhóm 27%).
+
+    Returns:
+        Series tên ``D``, index là mã câu (giữ thứ tự cột).
+
+    Raises:
+        ValueError: nếu ma trận không hợp lệ hoặc quá ít thí sinh để chia nhóm.
+    """
+    _check_scored(scored)
+    t = thresholds or CTTThresholds()
+    high, low = split_groups(scored.sum(axis=1), t.group_fraction)
+    d = scored.loc[high].mean(axis=0) - scored.loc[low].mean(axis=0)
+    return d.astype(float).rename("D")
