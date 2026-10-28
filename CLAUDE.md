@@ -21,9 +21,11 @@ Nhóm 2 người, kế hoạch 8 tuần, Python 3.12, Windows.
 - Thí sinh bỏ trống toàn bộ bị loại mặc định (core.scoring.filter_blank_students).
 
 ## Chạy test
-python -m unittest discover -s tests -t . -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
+(Trên máy này `python` chưa nằm trên PATH; luôn dùng python trong .venv.)
 Test dữ liệu thật tự bỏ qua nếu thiếu data/raw/infoseccat/ (hoặc đặt INFOSECCAT_DIR).
 
 ## Tiến độ
-Xong: tuần 1 (io, scoring, config), T2.0 (lọc thí sinh trống), T2.1 (core/ctt.py: p và phân loại độ khó).
-Kế hoạch tuần 2: T2.2 D 27%, T2.3 r_pbis, T2.4 KR-20, T2.5 bảng một dòng mỗi câu + cờ, T2.6 scripts/run_ctt.py.
+Xong: tuần 1 (io, scoring, config), T2.0 (lọc thí sinh trống), T2.1 (p và phân loại độ khó),
+T2.2 (split_groups, discrimination_index; nhóm 27% sắp xếp ổn định, hòa điểm theo thứ tự dòng).
+Còn lại tuần 2: T2.3 r_pbis, T2.4 KR-20, T2.5 bảng một dòng mỗi câu + cờ, T2.6 scripts/run_ctt.py.
