@@ -1,4 +1,5 @@
-"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D; T2.3: r_pbis; T2.4: KR-20)."""
+"""Test cho core.ctt (T2.1: độ khó p và phân loại; T2.2: độ phân biệt D; T2.3: r_pbis; T2.4: KR-20;
+T2.5: bảng CTT và cờ "cần xem lại")."""
 import os
 import unittest
 import warnings
@@ -9,9 +10,9 @@ import pandas as pd
 from scipy.stats import pointbiserialr
 
 from core.config import CTTThresholds, load_config
-from core.ctt import (SUITABLE, TOO_EASY, TOO_HARD, classify_difficulty,
-                      discrimination_index, item_difficulty, kr20, point_biserial,
-                      split_groups)
+from core.ctt import (SUITABLE, TOO_EASY, TOO_HARD, CTTReport, classify_difficulty,
+                      classify_point_biserial, ctt_report, discrimination_index,
+                      item_difficulty, kr20, point_biserial, review_flags, split_groups)
 from core.io import load_key, load_responses
 from core.scoring import filter_blank_students, score_matrix
 
@@ -413,6 +414,243 @@ class TestPointBiserial(unittest.TestCase):
             point_biserial(pd.DataFrame({"a": [0.5, 1.0]}), exclude_item=False)
 
 
+class TestClassifyPointBiserial(unittest.TestCase):
+    """classify_point_biserial."""
+
+    def test_default_thresholds_including_boundaries(self) -> None:
+        r = pd.Series([0.5, 0.4, 0.3999, 0.2, 0.1999, -0.3, np.nan], index=list("abcdefg"))
+        cls = classify_point_biserial(r)
+        self.assertEqual(cls.name, "r_pbis_class")
+        self.assertEqual(list(cls.index), list("abcdefg"))
+        self.assertEqual(
+            list(cls), ["good", "good", "acceptable", "acceptable", "poor", "poor", "undefined"]
+        )
+
+    def test_float_noise_and_custom_thresholds(self) -> None:
+        r = pd.Series([0.2 - 1e-12, 0.1, 0.25])
+        self.assertEqual(list(classify_point_biserial(r)), ["acceptable", "poor", "acceptable"])
+        t = CTTThresholds(r_pbis_acceptable=0.1, r_pbis_good=0.25)
+        self.assertEqual(list(classify_point_biserial(r, t)), ["acceptable", "acceptable", "good"])
+
+
+class TestReviewFlags(unittest.TestCase):
+    """review_flags."""
+
+    def test_flag_priority_reason(self) -> None:
+        # a: r tốt; b: r kém, p cao; c: r kém, p = p_min (biên, tính "high");
+        # d: r = NaN, p = 1; e: r = NaN, p = 0; f: r đúng bằng ngưỡng 0,2 (không cờ)
+        idx = list("abcdef")
+        p = pd.Series([0.5, 0.8, 0.3, 1.0, 0.0, 0.1], index=idx)
+        r = pd.Series([0.5, 0.1, -0.2, np.nan, np.nan, 0.2], index=idx)
+        flags = review_flags(p, r)
+        self.assertEqual(list(flags.columns), ["review_flag", "review_priority", "review_reason"])
+        self.assertEqual(list(flags.index), idx)
+        self.assertEqual(list(flags["review_flag"]), [False, True, True, True, True, False])
+        self.assertEqual(list(flags["review_priority"]), ["", "normal", "high", "normal", "high", ""])
+        self.assertEqual(
+            list(flags["review_reason"]),
+            ["", "r_pbis<0.2", "r_pbis<0.2 & p<=0.3", "r_pbis undefined",
+             "r_pbis undefined & p<=0.3", ""],
+        )
+
+    def test_reason_uses_thresholds(self) -> None:
+        t = CTTThresholds(p_min=0.25, r_pbis_acceptable=0.15, r_pbis_good=0.3)
+        flags = review_flags(pd.Series([0.2, 0.5]), pd.Series([0.16, 0.1]), t)
+        self.assertEqual(list(flags["review_flag"]), [False, True])
+        self.assertEqual(list(flags["review_reason"]), ["", "r_pbis<0.15"])
+
+    def test_mismatched_index_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            review_flags(pd.Series([0.5], index=["a"]), pd.Series([0.5], index=["b"]))
+
+
+# 6 thí sinh x 5 câu, đáp án đúng đều là "a"; "b" hoặc "" là sai.
+# Ma trận 0/1:      q1 q2 q3 q4 q5 | tổng
+#   S1              1  0  0  1  0  |  2
+#   S2              1  1  0  1  1  |  4
+#   S3              1  0  1  1  1  |  4
+#   S4              1  1  0  0  0  |  2
+#   S5              1  1  0  1  1  |  4
+#   S6              1  1  0  1  0  |  3
+_HAND_SCORED = [
+    [1, 0, 0, 1, 0],
+    [1, 1, 0, 1, 1],
+    [1, 0, 1, 1, 1],
+    [1, 1, 0, 0, 0],
+    [1, 1, 0, 1, 1],
+    [1, 1, 0, 1, 0],
+]
+_HAND_ITEMS = ["q1", "q2", "q3", "q4", "q5"]
+
+
+def _hand_key(items: list[str] = _HAND_ITEMS) -> pd.DataFrame:
+    """Đáp án: mọi câu đáp án "a", 4 phương án."""
+    return pd.DataFrame(
+        {"correct_answer": ["a"] * len(items), "num_choices": [4] * len(items)},
+        index=pd.Index(items, name="question_id"),
+    )
+
+
+def _hand_responses() -> pd.DataFrame:
+    """Ma trận lựa chọn ứng với ``_HAND_SCORED``; ô sai xen kẽ "b" và "" (đều tính sai)."""
+    rows = []
+    for i, row in enumerate(_HAND_SCORED):
+        rows.append(["a" if v else ("" if (i + j) % 2 else "b") for j, v in enumerate(row)])
+    return pd.DataFrame(
+        rows,
+        index=pd.Index([f"S{i + 1}" for i in range(6)], name="student"),
+        columns=pd.Index(_HAND_ITEMS, name="question_id"),
+    )
+
+
+def _with_blank_students(responses: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """Thêm các thí sinh bỏ trống toàn bộ (mọi ô là "")."""
+    blank = pd.DataFrame("", index=pd.Index(names, name="student"), columns=responses.columns)
+    return pd.concat([responses, blank])
+
+
+class TestCTTReport(unittest.TestCase):
+    """ctt_report trên bộ nhỏ tính tay."""
+
+    def test_hand_computed_items(self) -> None:
+        # p = số đúng / 6: q1 6/6 = 1; q2 4/6; q3 1/6; q4 5/6; q5 3/6.
+        # Phân loại (0,3 / 0,7): q1 too_easy, q2 suitable, q3 too_hard, q4 too_easy, q5 suitable.
+        #
+        # D: N = 6, n = floor(0,27*6 + 0,5) = 2. Tổng [2,4,4,2,4,3]; xếp ổn định giảm dần:
+        # S2,S3,S5,S6,S1,S4 -> nhóm cao {S2,S3}, nhóm thấp {S1,S4}.
+        # q1: 1-1 = 0; q2: (1+0)/2-(0+1)/2 = 0; q3: (0+1)/2-0 = 0,5;
+        # q4: (1+1)/2-(1+0)/2 = 0,5; q5: 1-0 = 1.
+        #
+        # r_pbis với tổng hiệu chỉnh y = tổng - câu đang xét (q1 hằng số nên không ảnh hưởng r).
+        # Dùng Sxy = sum(xy) - N*mx*my, Sxx = N*p*q, Syy = sum(y^2) - N*my^2, r = Sxy/sqrt(Sxx*Syy).
+        # q1: x hằng số -> NaN.
+        # q2: x=[0,1,0,1,1,1], y=[2,3,4,1,3,2]; bỏ hằng số 1 của q1: y'=[1,2,3,0,2,1], my=1,5;
+        #     Sxy = 5 - 6*(2/3)*1,5 = -1; Sxx = 4/3; Syy = 19 - 13,5 = 5,5;
+        #     r = -1/sqrt(22/3) ≈ -0,369274.
+        # q3: x=[0,0,1,0,0,0], y'=[1,3,2,1,3,2], my=2; Sxy = 2 - 6*(1/6)*2 = 0 -> r = 0.
+        # q4: x=[1,1,1,0,1,1], y'=[0,2,2,1,2,1], my=4/3; Sxy = 7 - 6*(5/6)*(4/3) = 1/3;
+        #     Sxx = 5/6; Syy = 14 - 32/3 = 10/3; r = (1/3)/sqrt(25/9) = 0,2 (đúng bằng ngưỡng).
+        # q5: x=[0,1,1,0,1,0], y'=[1,2,2,1,2,2], my=5/3; Sxy = 6 - 5 = 1; Sxx = 1,5;
+        #     Syy = 18 - 50/3 = 4/3; r = 1/sqrt(2) ≈ 0,707107.
+        #
+        # Phân loại r (0,2 / 0,4): q1 undefined, q2 poor, q3 poor, q4 acceptable (biên), q5 good.
+        # Cờ: q1 (NaN, p = 1 > 0,3 -> normal), q2 (r<0,2, p = 2/3 -> normal),
+        #     q3 (r<0,2, p = 1/6 <= 0,3 -> high); q4 đúng bằng ngưỡng nên không cờ.
+        report = ctt_report(_hand_responses(), _hand_key())
+        self.assertIsInstance(report, CTTReport)
+        items = report.items
+        self.assertEqual(
+            list(items.columns),
+            ["p", "difficulty_class", "D", "r_pbis", "r_pbis_class",
+             "review_flag", "review_priority", "review_reason"],
+        )
+        self.assertEqual(list(items.index), _HAND_ITEMS)
+        np.testing.assert_allclose(items["p"], [1, 4 / 6, 1 / 6, 5 / 6, 3 / 6])
+        self.assertEqual(
+            list(items["difficulty_class"]), [TOO_EASY, SUITABLE, TOO_HARD, TOO_EASY, SUITABLE]
+        )
+        np.testing.assert_allclose(items["D"], [0, 0, 0.5, 0.5, 1])
+        r = items["r_pbis"].to_numpy()
+        self.assertTrue(np.isnan(r[0]))
+        np.testing.assert_allclose(r[1:], [-1 / np.sqrt(22 / 3), 0, 0.2, 1 / np.sqrt(2)], atol=1e-12)
+        self.assertEqual(list(items["r_pbis_class"]), ["undefined", "poor", "poor", "acceptable", "good"])
+        self.assertEqual(list(items["review_flag"]), [True, True, True, False, False])
+        self.assertEqual(list(items["review_priority"]), ["normal", "normal", "high", "", ""])
+        self.assertEqual(
+            list(items["review_reason"]),
+            ["r_pbis undefined", "r_pbis<0.2", "r_pbis<0.2 & p<=0.3", "", ""],
+        )
+
+    def test_hand_computed_summary(self) -> None:
+        # KR-20: L = 5; tổng [2,4,4,2,4,3], trung bình 19/6, SD^2 (ddof 0) = 65/6 - (19/6)^2 = 29/36;
+        # sum(pq) = 0 + 2/9 + 5/36 + 5/36 + 1/4 = 27/36; KR-20 = 5/4 * (1 - 27/29) = 5/58.
+        s = ctt_report(_hand_responses(), _hand_key()).summary
+        self.assertAlmostEqual(s.pop("kr20"), 5 / 58, places=12)
+        self.assertEqual(
+            s,
+            {
+                "n_students": 6, "n_blank_students": 0, "n_excluded": 0,
+                "blank_students_excluded": False, "n_items": 5, "kr20_excluding_blank": None,
+                "ddof": 0, "exclude_item_from_total": True, "group_fraction": 0.27, "n_flagged": 3,
+                "difficulty_counts": {TOO_HARD: 1, SUITABLE: 2, TOO_EASY: 2},
+            },
+        )
+
+    def test_boundary_with_custom_threshold(self) -> None:
+        # q5 có r = 1/sqrt(2); đặt ngưỡng đúng bằng giá trị đó -> "acceptable", không cờ.
+        t = CTTThresholds(r_pbis_acceptable=1 / np.sqrt(2), r_pbis_good=0.9)
+        items = ctt_report(_hand_responses(), _hand_key(), t).items
+        self.assertEqual(items.loc["q5", "r_pbis_class"], "acceptable")
+        self.assertFalse(items.loc["q5", "review_flag"])
+        self.assertTrue(items.loc["q4", "review_flag"])
+        self.assertEqual(items.loc["q4", "review_reason"], "r_pbis<0.707107")
+
+    def test_full_total_follows_thresholds(self) -> None:
+        t = CTTThresholds(exclude_item_from_total=False)
+        report = ctt_report(_hand_responses(), _hand_key(), t)
+        expected = point_biserial(score_matrix(_hand_responses(), _hand_key()), exclude_item=False)
+        pd.testing.assert_series_equal(report.items["r_pbis"], expected)
+        self.assertFalse(report.summary["exclude_item_from_total"])
+
+    def test_items_follow_key_order(self) -> None:
+        order = ["q5", "q3", "q1", "q4", "q2"]
+        items = ctt_report(_hand_responses(), _hand_key(order)).items
+        self.assertEqual(list(items.index), order)
+        self.assertAlmostEqual(items.loc["q3", "p"], 1 / 6)
+
+    def test_exclude_blank_students_true_and_false(self) -> None:
+        responses = _with_blank_students(_hand_responses(), ["B1", "B2"])
+        before = responses.copy()
+        kept = ctt_report(responses, _hand_key())
+        excluded = ctt_report(responses, _hand_key(), CTTThresholds(exclude_blank_students=True))
+        pd.testing.assert_frame_equal(responses, before)
+
+        # Giữ: N = 8, p(q1) = 6/8, KR-20 khác bộ 6 người; kr20_excluding_blank = 5/58.
+        self.assertEqual(kept.summary["n_students"], 8)
+        self.assertEqual(kept.summary["n_blank_students"], 2)
+        self.assertEqual(kept.summary["n_excluded"], 0)
+        self.assertFalse(kept.summary["blank_students_excluded"])
+        self.assertAlmostEqual(kept.items.loc["q1", "p"], 0.75)
+        self.assertAlmostEqual(kept.summary["kr20_excluding_blank"], 5 / 58, places=12)
+        self.assertNotAlmostEqual(kept.summary["kr20"], 5 / 58, places=6)
+
+        # Loại: giống hệt kết quả trên 6 thí sinh ban đầu.
+        self.assertEqual(excluded.summary["n_students"], 6)
+        self.assertEqual(excluded.summary["n_blank_students"], 2)
+        self.assertEqual(excluded.summary["n_excluded"], 2)
+        self.assertTrue(excluded.summary["blank_students_excluded"])
+        self.assertAlmostEqual(excluded.summary["kr20"], 5 / 58, places=12)
+        self.assertEqual(excluded.summary["kr20_excluding_blank"], excluded.summary["kr20"])
+        pd.testing.assert_frame_equal(
+            excluded.items, ctt_report(_hand_responses(), _hand_key()).items
+        )
+
+    def test_all_wrong_but_answered_is_not_blank(self) -> None:
+        # S7 trả lời "b" mọi câu: toàn 0 trong ma trận chấm điểm nhưng không phải bỏ trống
+        responses = _hand_responses()
+        responses.loc["S7"] = ["b"] * len(_HAND_ITEMS)
+        t = CTTThresholds(exclude_blank_students=True)
+        s = ctt_report(responses, _hand_key(), t).summary
+        self.assertEqual((s["n_students"], s["n_blank_students"], s["n_excluded"]), (7, 0, 0))
+        self.assertIsNone(s["kr20_excluding_blank"])
+
+    def test_report_is_frozen(self) -> None:
+        report = ctt_report(_hand_responses(), _hand_key())
+        with self.assertRaises(AttributeError):
+            report.items = pd.DataFrame()  # type: ignore[misc]
+
+    def test_invalid_inputs_raise(self) -> None:
+        all_blank = pd.DataFrame("", index=["S1", "S2"], columns=_HAND_ITEMS)
+        with self.assertRaises(ValueError):
+            ctt_report(all_blank, _hand_key(), CTTThresholds(exclude_blank_students=True))
+        with self.assertRaises(ValueError):
+            ctt_report(_hand_responses(), _hand_key(["q1", "q2"]))
+        bad = _hand_responses()
+        bad.iloc[0, 0] = "z"
+        with self.assertRaises(ValueError):
+            ctt_report(bad, _hand_key())
+
+
 def _data_dir() -> Path:
     env = os.environ.get("INFOSECCAT_DIR")
     return Path(env) if env else load_config().data_dir / "raw" / "infoseccat"
@@ -480,6 +718,26 @@ class TestRealData(unittest.TestCase):
                 self.assertEqual(list(r.index), list(scored.columns))
                 self.assertFalse(r.isna().any())
                 np.testing.assert_allclose(r.to_numpy(), _scipy_pbis(scored, exclude), rtol=0, atol=1e-9)
+
+    def test_ctt_report_default_keeps_all_276(self) -> None:
+        key = load_key(_data_dir() / "key.csv")
+        report = ctt_report(self.responses, key)
+        s = report.summary
+        self.assertEqual((s["n_students"], s["n_blank_students"], s["n_excluded"]), (276, 3, 0))
+        self.assertAlmostEqual(s["kr20"], 0.858, delta=1e-3)
+        self.assertAlmostEqual(s["kr20_excluding_blank"], 0.734, delta=1e-3)
+        self.assertEqual(len(report.items), 50)
+        self.assertEqual(list(report.items.index), list(key.index))
+
+    def test_ctt_report_excluding_blank_273(self) -> None:
+        key = load_key(_data_dir() / "key.csv")
+        report = ctt_report(self.responses, key, CTTThresholds(exclude_blank_students=True))
+        s = report.summary
+        self.assertEqual((s["n_students"], s["n_excluded"]), (273, 3))
+        self.assertAlmostEqual(s["kr20"], s["kr20_excluding_blank"], places=12)
+        self.assertAlmostEqual(s["kr20"], 0.734, delta=1e-3)
+        self.assertEqual(len(report.items), 50)
+        self.assertEqual(list(report.items.index), list(key.index))
 
 
 if __name__ == "__main__":

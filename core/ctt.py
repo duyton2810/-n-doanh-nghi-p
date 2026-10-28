@@ -1,16 +1,27 @@
-"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p, phân loại độ khó, độ phân biệt D, r_pbis, KR-20."""
+"""CTT (lý thuyết trắc nghiệm cổ điển): độ khó p, phân loại độ khó, độ phân biệt D, r_pbis, KR-20.
+
+``ctt_report`` gộp các chỉ số thành bảng một dòng mỗi câu kèm cờ "cần xem lại".
+"""
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from core.config import CTTThresholds
+from core.scoring import blank_students, filter_blank_students, score_matrix
 
 TOO_HARD = "too_hard"
 SUITABLE = "suitable"
 TOO_EASY = "too_easy"
+R_GOOD = "good"
+R_ACCEPTABLE = "acceptable"
+R_POOR = "poor"
+R_UNDEFINED = "undefined"
+PRIORITY_HIGH = "high"
+PRIORITY_NORMAL = "normal"
 _BOUNDARY_TOL = 1e-9
 
 
@@ -203,3 +214,169 @@ def point_biserial(
     # cột hằng số gồm số nguyên nên độ lệch khỏi trung bình đúng bằng 0
     r = items.corrwith(other, axis=0).reindex(scored.columns)
     return pd.Series(np.clip(r.to_numpy(dtype=float), -1.0, 1.0), index=scored.columns, name="r_pbis")
+
+
+def classify_point_biserial(r: pd.Series, thresholds: CTTThresholds | None = None) -> pd.Series:
+    """Phân loại r_pbis theo ngưỡng ``r_pbis_acceptable`` và ``r_pbis_good``.
+
+    - ``good``: r >= r_pbis_good
+    - ``acceptable``: r_pbis_acceptable <= r < r_pbis_good
+    - ``poor``: r < r_pbis_acceptable
+    - ``undefined``: r là NaN
+
+    So sánh có dung sai 1e-9 ở biên (r đúng bằng ngưỡng thuộc lớp cao hơn).
+
+    Args:
+        r: r_pbis từng câu (kết quả của :func:`point_biserial`).
+        thresholds: ngưỡng; mặc định lấy ``CTTThresholds()`` (0,2 và 0,4).
+
+    Returns:
+        Series tên ``r_pbis_class`` cùng index với ``r``.
+    """
+    t = thresholds or CTTThresholds()
+    values = r.to_numpy(dtype=float)
+    labels = np.select(
+        [
+            np.isnan(values),
+            values >= t.r_pbis_good - _BOUNDARY_TOL,
+            values >= t.r_pbis_acceptable - _BOUNDARY_TOL,
+        ],
+        [R_UNDEFINED, R_GOOD, R_ACCEPTABLE],
+        default=R_POOR,
+    )
+    return pd.Series(labels, index=r.index, name="r_pbis_class")
+
+
+def review_flags(p: pd.Series, r: pd.Series, thresholds: CTTThresholds | None = None) -> pd.DataFrame:
+    """Cờ "cần xem lại" của từng câu dựa trên r_pbis và độ khó p.
+
+    - ``review_flag``: r < r_pbis_acceptable (dung sai 1e-9) hoặc r là NaN.
+    - ``review_priority``: ``high`` nếu có cờ và p <= p_min (dung sai 1e-9),
+      ``normal`` nếu có cờ và p > p_min, ``""`` nếu không có cờ.
+    - ``review_reason``: lý do ngắn, ví dụ ``r_pbis<0.2``, ``r_pbis<0.2 & p<=0.3``,
+      ``r_pbis undefined``; ``""`` nếu không có cờ.
+
+    Args:
+        p: độ khó từng câu.
+        r: r_pbis từng câu, cùng index với ``p``.
+        thresholds: ngưỡng; mặc định lấy ``CTTThresholds()``.
+
+    Returns:
+        DataFrame index như ``p``, cột ``review_flag`` (bool), ``review_priority``, ``review_reason``.
+
+    Raises:
+        ValueError: nếu ``p`` và ``r`` khác index.
+    """
+    if not p.index.equals(r.index):
+        raise ValueError("p và r_pbis phải cùng index")
+    t = thresholds or CTTThresholds()
+    p_values = p.to_numpy(dtype=float)
+    r_values = r.to_numpy(dtype=float)
+    undefined = np.isnan(r_values)
+    flag = undefined | (r_values < t.r_pbis_acceptable - _BOUNDARY_TOL)
+    hard = p_values <= t.p_min + _BOUNDARY_TOL
+    priority = np.where(flag, np.where(hard, PRIORITY_HIGH, PRIORITY_NORMAL), "")
+    reasons = []
+    for f, u, h in zip(flag, undefined, hard):
+        if not f:
+            reasons.append("")
+            continue
+        reason = "r_pbis undefined" if u else f"r_pbis<{t.r_pbis_acceptable:g}"
+        reasons.append(f"{reason} & p<={t.p_min:g}" if h else reason)
+    return pd.DataFrame(
+        {"review_flag": flag.astype(bool), "review_priority": priority, "review_reason": reasons},
+        index=p.index,
+    )
+
+
+@dataclass(frozen=True)
+class CTTReport:
+    """Kết quả phân tích CTT của một đề.
+
+    Attributes:
+        items: bảng một dòng mỗi câu (index = mã câu, theo thứ tự key).
+        summary: số liệu tổng hợp của cả đề (N, KR-20, số câu bị gắn cờ, ...).
+    """
+
+    items: pd.DataFrame
+    summary: dict[str, object]
+
+
+def ctt_report(
+    responses: pd.DataFrame,
+    key: pd.DataFrame,
+    thresholds: CTTThresholds | None = None,
+) -> CTTReport:
+    """Phân tích CTT đầy đủ: bảng một dòng mỗi câu kèm cờ "cần xem lại" và tóm tắt.
+
+    Quy trình: nếu ``thresholds.exclude_blank_students`` thì loại thí sinh bỏ trống
+    toàn bộ (phát hiện trên ``responses``, không suy từ ma trận 0/1), chấm điểm, rồi
+    tính p, D, r_pbis (theo ``thresholds.exclude_item_from_total``) và KR-20 (``ddof = 0``).
+
+    Cột của ``items``: ``p, difficulty_class, D, r_pbis, r_pbis_class, review_flag,
+    review_priority, review_reason``.
+
+    Khóa của ``summary``: ``n_students`` (N đã dùng), ``n_blank_students`` (trong dữ
+    liệu gốc), ``n_excluded``, ``blank_students_excluded``, ``n_items``, ``kr20``,
+    ``kr20_excluding_blank`` (KR-20 khi loại thí sinh bỏ trống toàn bộ; None nếu không
+    có ai bỏ trống), ``ddof``, ``exclude_item_from_total``, ``group_fraction``,
+    ``n_flagged``, ``difficulty_counts`` (dict lớp độ khó -> số câu).
+
+    Args:
+        responses: ma trận lựa chọn (index = student, cột = question_id, ô trống ``""``).
+            Không bị sửa.
+        key: đáp án (index question_id, cột ``correct_answer``, ``num_choices``).
+        thresholds: ngưỡng; mặc định lấy ``CTTThresholds()``.
+
+    Returns:
+        :class:`CTTReport`.
+
+    Raises:
+        ValueError: do các hàm thành phần ném ra, ví dụ responses không khớp key,
+            loại hết thí sinh, quá ít thí sinh để chia nhóm, hoặc phương sai tổng bằng 0.
+    """
+    t = thresholds or CTTThresholds()
+    ddof = 0
+    blanks = blank_students(responses)
+    used, removed = filter_blank_students(responses, exclude=t.exclude_blank_students)
+    scored = score_matrix(used, key)
+
+    p = item_difficulty(scored)
+    r = point_biserial(scored, t)
+    items = pd.concat(
+        [
+            p,
+            classify_difficulty(p, t),
+            discrimination_index(scored, t),
+            r,
+            classify_point_biserial(r, t),
+            review_flags(p, r, t),
+        ],
+        axis=1,
+    )
+
+    total_kr20 = kr20(scored, ddof=ddof)
+    if len(blanks) == 0:
+        kr20_excluding_blank = None
+    elif t.exclude_blank_students:
+        kr20_excluding_blank = total_kr20
+    else:
+        kept, _ = filter_blank_students(responses)
+        kr20_excluding_blank = kr20(score_matrix(kept, key), ddof=ddof)
+
+    difficulty = items["difficulty_class"]
+    summary: dict[str, object] = {
+        "n_students": len(scored),
+        "n_blank_students": len(blanks),
+        "n_excluded": len(removed),
+        "blank_students_excluded": bool(t.exclude_blank_students),
+        "n_items": int(scored.shape[1]),
+        "kr20": float(total_kr20),
+        "kr20_excluding_blank": kr20_excluding_blank,
+        "ddof": ddof,
+        "exclude_item_from_total": bool(t.exclude_item_from_total),
+        "group_fraction": float(t.group_fraction),
+        "n_flagged": int(items["review_flag"].sum()),
+        "difficulty_counts": {c: int((difficulty == c).sum()) for c in (TOO_HARD, SUITABLE, TOO_EASY)},
+    }
+    return CTTReport(items=items, summary=summary)
