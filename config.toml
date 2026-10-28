@@ -9,3 +9,4 @@ group_fraction = 0.27
 r_pbis_acceptable = 0.2
 r_pbis_good = 0.4
 exclude_item_from_total = true
+exclude_blank_students = false

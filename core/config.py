@@ -19,6 +19,7 @@ class CTTThresholds:
     r_pbis_acceptable: float = 0.2
     r_pbis_good: float = 0.4
     exclude_item_from_total: bool = True
+    exclude_blank_students: bool = False
 
     def __post_init__(self) -> None:
         """Kiểm tra tính hợp lệ của các ngưỡng."""
