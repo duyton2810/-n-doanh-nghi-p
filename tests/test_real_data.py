@@ -9,7 +9,8 @@ from pathlib import Path
 
 from core.config import load_config
 from core.io import load_key, load_responses
-from core.scoring import omit_counts, score_matrix, total_scores
+from core.scoring import (blank_students, filter_blank_students, omit_counts,
+                          score_matrix, total_scores)
 
 
 def _data_dir() -> Path:
@@ -38,6 +39,14 @@ class TestInfoSecCAT(unittest.TestCase):
     def test_scores_in_range(self) -> None:
         totals = total_scores(self.scored)
         self.assertTrue(totals.between(0, 50).all())
+
+    def test_blank_students_are_the_three_known(self) -> None:
+        self.assertEqual(sorted(blank_students(self.responses)), ["S050", "S179", "S225"])
+
+    def test_filter_leaves_273_students(self) -> None:
+        kept, removed = filter_blank_students(self.responses)
+        self.assertEqual(kept.shape, (273, 50))
+        self.assertEqual(len(removed), 3)
 
 
 if __name__ == "__main__":
