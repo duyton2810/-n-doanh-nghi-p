@@ -14,6 +14,7 @@ Nhóm 2 người, kế hoạch 8 tuần, Python 3.12, Windows.
 - Không tự cài lại thứ thư viện đã có. Không bịa tên cột hay định dạng file; thiếu thông tin thì hỏi.
 - Không commit dữ liệu thô: thư mục data/ nằm trong .gitignore.
 - Mỗi task làm trên một nhánh Git riêng, không commit thẳng vào main.
+- Commit ngay khi xong task, trước khi tạo nhánh khác; git status phải sạch trước khi đổi nhánh.
 
 ## Quy ước dữ liệu
 - Ma trận lựa chọn: index = student, cột = question_id (chuỗi), ô trống = "" (tính sai).
@@ -26,6 +27,6 @@ Nhóm 2 người, kế hoạch 8 tuần, Python 3.12, Windows.
 Test dữ liệu thật tự bỏ qua nếu thiếu data/raw/infoseccat/ (hoặc đặt INFOSECCAT_DIR).
 
 ## Tiến độ
-Xong: tuần 1 (io, scoring, config), T2.0 (lọc thí sinh trống), T2.1 (p và phân loại độ khó),
-T2.2 (split_groups, discrimination_index; nhóm 27% sắp xếp ổn định, hòa điểm theo thứ tự dòng).
-Còn lại tuần 2: T2.3 r_pbis, T2.4 KR-20, T2.5 bảng một dòng mỗi câu + cờ, T2.6 scripts/run_ctt.py.
+Xong: tuần 1 (io, scoring, config) và T2.0-T2.6: core/ctt.py (p, D, r_pbis, KR-20, ctt_report);
+scripts/run_ctt.py (mặc định GIỮ thí sinh bỏ trống toàn bộ, N = 276; có --exclude-blank và --compare).
+Việc kế tiếp: tuần 3 (distractor, simulate, mapping, thử pyBKT, điều khoản ASSISTments).
