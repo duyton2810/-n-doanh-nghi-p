@@ -19,7 +19,8 @@ class CTTThresholds:
     r_pbis_acceptable: float = 0.2
     r_pbis_good: float = 0.4
     exclude_item_from_total: bool = True
-    exclude_blank_students: bool = False
+    exclude_blank_students: bool = True
+    warn_omit_rate: float = 0.5
 
     def __post_init__(self) -> None:
         """Kiểm tra tính hợp lệ của các ngưỡng."""
@@ -29,6 +30,8 @@ class CTTThresholds:
             raise ValueError("group_fraction phải nằm trong (0, 0.5)")
         if not self.r_pbis_acceptable < self.r_pbis_good:
             raise ValueError("Cần r_pbis_acceptable < r_pbis_good")
+        if not 0.0 < self.warn_omit_rate <= 1.0:
+            raise ValueError("warn_omit_rate phải nằm trong (0, 1]")
 
 
 @dataclass(frozen=True)

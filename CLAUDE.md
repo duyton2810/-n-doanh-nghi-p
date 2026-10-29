@@ -16,10 +16,14 @@ Nhóm 2 người, kế hoạch 8 tuần, Python 3.12, Windows.
 - Mỗi task làm trên một nhánh Git riêng, không commit thẳng vào main.
 - Commit ngay khi xong task, trước khi tạo nhánh khác; git status phải sạch trước khi đổi nhánh.
 
+## Quy trình dữ liệu
+nạp -> làm sạch -> chấm điểm -> phân tích; mọi phân tích dùng core.cleaning.prepare_dataset
+(không tự gọi score_matrix trên dữ liệu thô).
+
 ## Quy ước dữ liệu
 - Ma trận lựa chọn: index = student, cột = question_id (chuỗi), ô trống = "" (tính sai).
 - Ma trận chấm điểm: 0/1 (int8). Key: index question_id, cột correct_answer, num_choices.
-- Thí sinh bỏ trống toàn bộ bị loại mặc định (core.scoring.filter_blank_students).
+- Thí sinh bỏ trống toàn bộ bị loại mặc định (core.cleaning.clean_responses; exclude_blank_students=false / --keep-blank để giữ).
 
 ## Chạy test
 .\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
@@ -27,6 +31,7 @@ Nhóm 2 người, kế hoạch 8 tuần, Python 3.12, Windows.
 Test dữ liệu thật tự bỏ qua nếu thiếu data/raw/infoseccat/ (hoặc đặt INFOSECCAT_DIR).
 
 ## Tiến độ
-Xong: tuần 1 (io, scoring, config) và T2.0-T2.6: core/ctt.py (p, D, r_pbis, KR-20, ctt_report);
-scripts/run_ctt.py (mặc định GIỮ thí sinh bỏ trống toàn bộ, N = 276; có --exclude-blank và --compare).
+Xong: tuần 1 (io, scoring, config); T0: core/cleaning.py (làm sạch, prepare_dataset) đứng trước mọi phân tích;
+T2.0-T2.6: core/ctt.py (p, D, r_pbis, KR-20, ctt_report);
+scripts/run_ctt.py (mặc định LOẠI thí sinh bỏ trống toàn bộ, N = 273; có --keep-blank, --exclude-blank và --compare).
 Việc kế tiếp: tuần 3 (distractor, simulate, mapping, thử pyBKT, điều khoản ASSISTments).

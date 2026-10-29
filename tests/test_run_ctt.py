@@ -11,7 +11,7 @@ import pandas as pd
 
 from core.config import load_config
 from core.io import dataset_hash
-from scripts.run_ctt import (COMPARE_COLUMNS, COMPARE_FILE, ITEMS_FILE, SUMMARY_FILE,
+from scripts.run_ctt import (CLEANING_FILE, COMPARE_COLUMNS, COMPARE_FILE, ITEMS_FILE, SUMMARY_FILE,
                              build_parser, main, summary_lines)
 
 # q1, q2 giữ nguyên cờ; q3, q4 bị cờ chỉ khi loại hai thí sinh bỏ trống toàn bộ (S9, S10)
@@ -71,13 +71,27 @@ class TestRunCTT(unittest.TestCase):
         self.assertEqual(list(items.columns), ITEM_COLUMNS)
         self.assertEqual(list(items["question_id"]), ["q1", "q2", "q3", "q4"])
         summary = self._summary()
-        self.assertEqual(summary["n_students"], 10)
+        self.assertEqual(summary["n_students"], 8)
         self.assertEqual(summary["n_blank_students"], 2)
-        self.assertFalse(summary["thresholds"]["exclude_blank_students"])
+        self.assertTrue(summary["thresholds"]["exclude_blank_students"])
+        self.assertEqual(summary["cleaning_removed"], ["S9", "S10"])
+        removed = pd.read_csv(self.out / CLEANING_FILE, dtype={"student": str})
+        self.assertEqual(list(removed.columns), ["student", "reason", "n_answered"])
+        self.assertEqual(list(removed["student"]), ["S9", "S10"])
+        self.assertTrue((removed["reason"] == "bỏ trống toàn bộ").all())
+        self.assertTrue((removed["n_answered"] == 0).all())
+        self.assertEqual(stdout.splitlines()[0], "Đã loại khi làm sạch: 2 thí sinh (S9, S10)")
         expected = dataset_hash([self.data / "responses.csv", self.data / "key.csv"])
         self.assertEqual(summary["dataset_hash"], expected)
-        self.assertEqual(len(stdout.strip().splitlines()), 5)
+        self.assertEqual(len(stdout.strip().splitlines()), 6)
         self.assertFalse((self.out / COMPARE_FILE).exists())
+
+    def test_keep_blank_writes_empty_cleaning_file(self) -> None:
+        self.assertEqual(_run(self.base + ["--keep-blank"])[0], 0)
+        self.assertEqual(self._summary()["n_students"], 10)
+        removed = pd.read_csv(self.out / CLEANING_FILE)
+        self.assertEqual(list(removed.columns), ["student", "reason", "n_answered"])
+        self.assertTrue(removed.empty)
 
     def test_exclude_blank_overrides(self) -> None:
         self.assertEqual(_run(self.base + ["--exclude-blank"])[0], 0)
@@ -99,7 +113,7 @@ class TestRunCTT(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
 
     def test_compare_lists_only_changed_flags(self) -> None:
-        code, stdout, _ = _run(self.base + ["--compare"])
+        code, stdout, _ = _run(self.base + ["--compare", "--keep-blank"])
         self.assertEqual(code, 0)
         diff = pd.read_csv(self.out / COMPARE_FILE, dtype={"question_id": str})
         self.assertEqual(list(diff.columns), list(COMPARE_COLUMNS))
@@ -133,11 +147,12 @@ class TestRunCTT(unittest.TestCase):
 
     def test_summary_lines(self) -> None:
         summary = {"n_students": 3, "n_blank_students": 0, "blank_students_excluded": False,
-                   "kr20": 0.5, "n_flagged": 1, "n_items": 2,
+                   "kr20": 0.5, "n_flagged": 1, "n_items": 2, "cleaning_removed": [],
                    "difficulty_counts": {"too_hard": 0, "suitable": 2, "too_easy": 0}}
         lines = summary_lines(summary)
-        self.assertEqual(len(lines), 5)
-        self.assertEqual(lines[0], "N: 3")
+        self.assertEqual(len(lines), 6)
+        self.assertEqual(lines[0], "Đã loại khi làm sạch: 0 thí sinh")
+        self.assertEqual(lines[1], "N: 3")
 
 
 def _infoseccat_dir() -> Path:
@@ -160,8 +175,14 @@ class TestRunCTTInfoSecCAT(unittest.TestCase):
     def _n_students(self) -> int:
         return json.loads((self.out / SUMMARY_FILE).read_text(encoding="utf-8"))["n_students"]
 
-    def test_default_keeps_276(self) -> None:
+    def test_default_excludes_to_273(self) -> None:
         self.assertEqual(_run(self.base)[0], 0)
+        self.assertEqual(self._n_students(), 273)
+        removed = pd.read_csv(self.out / CLEANING_FILE)
+        self.assertEqual(list(removed["student"]), ["S050", "S179", "S225"])
+
+    def test_keep_blank_gives_276(self) -> None:
+        self.assertEqual(_run(self.base + ["--keep-blank"])[0], 0)
         self.assertEqual(self._n_students(), 276)
 
     def test_exclude_blank_gives_273(self) -> None:

@@ -570,9 +570,10 @@ class TestCTTReport(unittest.TestCase):
             s,
             {
                 "n_students": 6, "n_blank_students": 0, "n_excluded": 0,
-                "blank_students_excluded": False, "n_items": 5, "kr20_excluding_blank": None,
+                "blank_students_excluded": True, "n_items": 5, "kr20_excluding_blank": None,
                 "ddof": 0, "exclude_item_from_total": True, "group_fraction": 0.27, "n_flagged": 3,
                 "difficulty_counts": {TOO_HARD: 1, SUITABLE: 2, TOO_EASY: 2},
+                "cleaning_removed": [], "cleaning_warnings": [],
             },
         )
 
@@ -601,7 +602,7 @@ class TestCTTReport(unittest.TestCase):
     def test_exclude_blank_students_true_and_false(self) -> None:
         responses = _with_blank_students(_hand_responses(), ["B1", "B2"])
         before = responses.copy()
-        kept = ctt_report(responses, _hand_key())
+        kept = ctt_report(responses, _hand_key(), CTTThresholds(exclude_blank_students=False))
         excluded = ctt_report(responses, _hand_key(), CTTThresholds(exclude_blank_students=True))
         pd.testing.assert_frame_equal(responses, before)
 
@@ -619,6 +620,9 @@ class TestCTTReport(unittest.TestCase):
         self.assertEqual(excluded.summary["n_blank_students"], 2)
         self.assertEqual(excluded.summary["n_excluded"], 2)
         self.assertTrue(excluded.summary["blank_students_excluded"])
+        self.assertEqual(excluded.summary["cleaning_removed"], ["B1", "B2"])
+        self.assertEqual(kept.summary["cleaning_removed"], [])
+        self.assertEqual(ctt_report(responses, _hand_key()).summary["n_students"], 6)  # mặc định loại
         self.assertAlmostEqual(excluded.summary["kr20"], 5 / 58, places=12)
         self.assertEqual(excluded.summary["kr20_excluding_blank"], excluded.summary["kr20"])
         pd.testing.assert_frame_equal(
@@ -719,13 +723,14 @@ class TestRealData(unittest.TestCase):
                 self.assertFalse(r.isna().any())
                 np.testing.assert_allclose(r.to_numpy(), _scipy_pbis(scored, exclude), rtol=0, atol=1e-9)
 
-    def test_ctt_report_default_keeps_all_276(self) -> None:
+    def test_ctt_report_keep_mode_keeps_all_276(self) -> None:
         key = load_key(_data_dir() / "key.csv")
-        report = ctt_report(self.responses, key)
+        report = ctt_report(self.responses, key, CTTThresholds(exclude_blank_students=False))
         s = report.summary
         self.assertEqual((s["n_students"], s["n_blank_students"], s["n_excluded"]), (276, 3, 0))
-        self.assertAlmostEqual(s["kr20"], 0.858, delta=1e-3)
+        self.assertAlmostEqual(s["kr20"], 0.8578, delta=1e-3)
         self.assertAlmostEqual(s["kr20_excluding_blank"], 0.734, delta=1e-3)
+        self.assertEqual(s["n_flagged"], 6)
         self.assertEqual(len(report.items), 50)
         self.assertEqual(list(report.items.index), list(key.index))
 

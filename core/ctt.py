@@ -4,14 +4,16 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
+from core.cleaning import CleaningReport, prepare_dataset
 from core.config import CTTThresholds
-from core.scoring import blank_students, filter_blank_students, score_matrix
+from core.scoring import blank_students
 
 TOO_HARD = "too_hard"
 SUITABLE = "suitable"
@@ -296,10 +298,12 @@ class CTTReport:
     Attributes:
         items: bảng một dòng mỗi câu (index = mã câu, theo thứ tự key).
         summary: số liệu tổng hợp của cả đề (N, KR-20, số câu bị gắn cờ, ...).
+        cleaning: báo cáo làm sạch dữ liệu (thí sinh bị loại, cảnh báo).
     """
 
     items: pd.DataFrame
     summary: dict[str, object]
+    cleaning: CleaningReport
 
 
 def ctt_report(
@@ -309,8 +313,8 @@ def ctt_report(
 ) -> CTTReport:
     """Phân tích CTT đầy đủ: bảng một dòng mỗi câu kèm cờ "cần xem lại" và tóm tắt.
 
-    Quy trình: nếu ``thresholds.exclude_blank_students`` thì loại thí sinh bỏ trống
-    toàn bộ (phát hiện trên ``responses``, không suy từ ma trận 0/1), chấm điểm, rồi
+    Quy trình: dữ liệu đi qua :func:`core.cleaning.prepare_dataset` (kiểm tra -> làm sạch
+    -> chấm điểm; mặc định loại thí sinh bỏ trống toàn bộ), rồi
     tính p, D, r_pbis (theo ``thresholds.exclude_item_from_total``) và KR-20 (``ddof = 0``).
 
     Cột của ``items``: ``p, difficulty_class, D, r_pbis, r_pbis_class, review_flag,
@@ -320,7 +324,8 @@ def ctt_report(
     liệu gốc), ``n_excluded``, ``blank_students_excluded``, ``n_items``, ``kr20``,
     ``kr20_excluding_blank`` (KR-20 khi loại thí sinh bỏ trống toàn bộ; None nếu không
     có ai bỏ trống), ``ddof``, ``exclude_item_from_total``, ``group_fraction``,
-    ``n_flagged``, ``difficulty_counts`` (dict lớp độ khó -> số câu).
+    ``n_flagged``, ``difficulty_counts`` (dict lớp độ khó -> số câu),
+    ``cleaning_removed`` (danh sách mã thí sinh bị loại), ``cleaning_warnings``.
 
     Args:
         responses: ma trận lựa chọn (index = student, cột = question_id, ô trống ``""``).
@@ -338,8 +343,9 @@ def ctt_report(
     t = thresholds or CTTThresholds()
     ddof = 0
     blanks = blank_students(responses)
-    used, removed = filter_blank_students(responses, exclude=t.exclude_blank_students)
-    scored = score_matrix(used, key)
+    prepared = prepare_dataset(responses, key, t)
+    scored = prepared.scored
+    removed = prepared.report.removed["student"]
 
     p = item_difficulty(scored)
     r = point_biserial(scored, t)
@@ -361,8 +367,8 @@ def ctt_report(
     elif t.exclude_blank_students:
         kr20_excluding_blank = total_kr20
     else:
-        kept, _ = filter_blank_students(responses)
-        kr20_excluding_blank = kr20(score_matrix(kept, key), ddof=ddof)
+        excluding = prepare_dataset(responses, key, dataclasses.replace(t, exclude_blank_students=True))
+        kr20_excluding_blank = kr20(excluding.scored, ddof=ddof)
 
     difficulty = items["difficulty_class"]
     summary: dict[str, object] = {
@@ -378,5 +384,7 @@ def ctt_report(
         "group_fraction": float(t.group_fraction),
         "n_flagged": int(items["review_flag"].sum()),
         "difficulty_counts": {c: int((difficulty == c).sum()) for c in (TOO_HARD, SUITABLE, TOO_EASY)},
+        "cleaning_removed": [str(s) for s in removed],
+        "cleaning_warnings": list(prepared.report.warnings),
     }
-    return CTTReport(items=items, summary=summary)
+    return CTTReport(items=items, summary=summary, cleaning=prepared.report)
