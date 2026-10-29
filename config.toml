@@ -9,4 +9,6 @@ group_fraction = 0.27
 r_pbis_acceptable = 0.2
 r_pbis_good = 0.4
 exclude_item_from_total = true
-exclude_blank_students = false
+exclude_blank_students = true
+# Cảnh báo (không loại) thí sinh có tỉ lệ bỏ trống >= ngưỡng này, khoảng (0, 1]
+warn_omit_rate = 0.5

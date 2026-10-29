@@ -23,6 +23,7 @@ KEY_FILE = "key.csv"
 ITEMS_FILE = "ctt_items.csv"
 SUMMARY_FILE = "ctt_summary.json"
 COMPARE_FILE = "ctt_compare.csv"
+CLEANING_FILE = "cleaning_removed.csv"
 COMPARE_COLUMNS = ("question_id", "p_keep", "p_exclude", "r_pbis_keep", "r_pbis_exclude",
                    "flag_keep", "flag_exclude")
 
@@ -68,9 +69,12 @@ def compare_flags(keep: CTTReport, exclude: CTTReport) -> pd.DataFrame:
 
 
 def summary_lines(summary: dict[str, object]) -> list[str]:
-    """Năm dòng tóm tắt in ra màn hình: N, số thí sinh bỏ trống, KR-20, số câu bị cờ, số câu theo độ khó."""
+    """Sáu dòng tóm tắt: số thí sinh đã loại khi làm sạch, N, số thí sinh bỏ trống, KR-20,
+    số câu bị cờ, số câu theo độ khó."""
     counts = summary["difficulty_counts"]
+    removed = summary["cleaning_removed"]
     return [
+        f"Đã loại khi làm sạch: {len(removed)} thí sinh" + (f" ({', '.join(removed)})" if removed else ""),
         f"N: {summary['n_students']}",
         f"Thí sinh bỏ trống toàn bộ: {summary['n_blank_students']} "
         f"({'đã loại' if summary['blank_students_excluded'] else 'giữ lại'})",
@@ -105,6 +109,7 @@ def run(args: argparse.Namespace) -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     report.items.to_csv(args.out_dir / ITEMS_FILE, index_label="question_id", encoding="utf-8")
+    report.cleaning.removed.to_csv(args.out_dir / CLEANING_FILE, index=False, encoding="utf-8")
     summary = {
         **report.summary,
         "dataset_hash": dataset_hash([responses_path, key_path]),

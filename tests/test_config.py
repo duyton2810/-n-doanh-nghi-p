@@ -16,12 +16,19 @@ class TestCTTThresholds(unittest.TestCase):
         self.assertEqual((t.p_min, t.p_max, t.group_fraction), (0.3, 0.7, 0.27))
         self.assertEqual((t.r_pbis_acceptable, t.r_pbis_good), (0.2, 0.4))
         self.assertTrue(t.exclude_item_from_total)
-        self.assertFalse(t.exclude_blank_students)
+        self.assertTrue(t.exclude_blank_students)
+        self.assertEqual(t.warn_omit_rate, 0.5)
 
     def test_invalid_values_raise(self) -> None:
         for kwargs in ({"p_min": 0.8}, {"group_fraction": 0.5}, {"r_pbis_good": 0.1}):
             with self.assertRaises(ValueError):
                 CTTThresholds(**kwargs)
+
+    def test_warn_omit_rate_range(self) -> None:
+        self.assertEqual(CTTThresholds(warn_omit_rate=1.0).warn_omit_rate, 1.0)
+        for value in (0.0, -0.1, 1.1):
+            with self.assertRaises(ValueError):
+                CTTThresholds(warn_omit_rate=value)
 
 
 class TestLoadConfig(unittest.TestCase):
@@ -47,10 +54,10 @@ class TestLoadConfig(unittest.TestCase):
     def test_exclude_blank_students_from_toml(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "c.toml"
-            p.write_text("[ctt]\nexclude_blank_students = true\n", encoding="utf-8")
-            self.assertTrue(load_config(p).ctt.exclude_blank_students)
-            p.write_text("[ctt]\np_min = 0.2\n", encoding="utf-8")
+            p.write_text("[ctt]\nexclude_blank_students = false\n", encoding="utf-8")
             self.assertFalse(load_config(p).ctt.exclude_blank_students)
+            p.write_text("[ctt]\np_min = 0.2\n", encoding="utf-8")
+            self.assertTrue(load_config(p).ctt.exclude_blank_students)
 
     def test_repo_config_toml_matches_defaults(self) -> None:
         cfg = load_config(Path(__file__).resolve().parent.parent / "config.toml")
